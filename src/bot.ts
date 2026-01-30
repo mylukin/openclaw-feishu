@@ -16,6 +16,11 @@ import {
 } from "./policy.js";
 import { createFeishuReplyDispatcher } from "./reply-dispatcher.js";
 import { getMessageFeishu, listMessagesFeishu, type FeishuHistoryMessage } from "./send.js";
+import { downloadAndTranscribeVoice } from "./media.js";
+import { execSync } from "child_process";
+import os from "os";
+import path from "path";
+import fs from "fs";
 
 export type FeishuMessageEvent = {
   sender: {
@@ -356,10 +361,43 @@ export async function handleFeishuMessage(params: {
 
     const envelopeOptions = core.channel.reply.resolveEnvelopeFormatOptions(cfg);
 
+    // Handle voice messages - download and transcribe
+    let voiceTranscription = "";
+    if (ctx.contentType === "audio") {
+      try {
+        log(`feishu: detected audio message, attempting to transcribe`);
+        
+        // Parse the file_key from audio message content
+        const audioContent = JSON.parse(ctx.content);
+        const fileKey = audioContent.file_key;
+        
+        if (fileKey) {
+          log(`feishu: downloading voice file: ${fileKey}`);
+          
+          // Download and transcribe the voice message
+          voiceTranscription = await downloadAndTranscribeVoice({
+            cfg,
+            messageId: ctx.messageId,
+            fileKey,
+          });
+          
+          log(`feishu: voice transcription: ${voiceTranscription?.slice(0, 100)}...`);
+        } else {
+          log(`feishu: no file_key found in audio message`);
+        }
+      } catch (err) {
+        log(`feishu: failed to transcribe voice message: ${String(err)}`);
+        // Continue without transcription
+      }
+    }
+
     // Build message body with quoted content if available
     let messageBody = ctx.content;
+    if (voiceTranscription) {
+      messageBody = `[语音转写]: ${voiceTranscription}\n\n${ctx.content}`;
+    }
     if (quotedContent) {
-      messageBody = `[Replying to: "${quotedContent}"]\n\n${ctx.content}`;
+      messageBody = `[Replying to: "${quotedContent}"]\n\n${messageBody}`;
     }
 
     // Check if user is requesting chat history

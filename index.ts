@@ -22,6 +22,10 @@ export {
   sendImageFeishu,
   sendFileFeishu,
   sendMediaFeishu,
+  downloadFeishuFile,
+  downloadFeishuVoice,
+  transcribeVoice,
+  downloadAndTranscribeVoice,
 } from "./src/media.js";
 export { probeFeishu } from "./src/probe.js";
 export {

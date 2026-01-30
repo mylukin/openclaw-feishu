@@ -5,6 +5,7 @@ import { resolveReceiveIdType, normalizeFeishuTarget } from "./targets.js";
 import fs from "fs";
 import path from "path";
 import { Readable } from "stream";
+import { execSync } from "child_process";
 
 export type UploadImageResult = {
   imageKey: string;
@@ -343,4 +344,125 @@ export async function sendMediaFeishu(params: {
     });
     return sendFileFeishu({ cfg, to, fileKey, replyToMessageId });
   }
+}
+
+/**
+ * Download a media file from Feishu message using message_id and file_key
+ * Returns the file content as a Buffer
+ */
+export async function downloadFeishuFile(params: {
+  cfg: ClawdbotConfig;
+  messageId: string;
+  fileKey: string;
+  fileType?: "audio" | "image" | "video" | "file";
+}): Promise<Buffer> {
+  const { cfg, messageId, fileKey, fileType = "audio" } = params;
+  const feishuCfg = cfg.channels?.feishu as FeishuConfig | undefined;
+  if (!feishuCfg) {
+    throw new Error("Feishu channel not configured");
+  }
+
+  const client = createFeishuClient(feishuCfg);
+
+  // Use messageResource.get to download the file from a message
+  const response = await client.im.messageResource.get({
+    params: {
+      type: fileType,
+    },
+    path: {
+      message_id: messageId,
+      file_key: fileKey,
+    },
+  });
+
+  const responseAny = response as any;
+  if (responseAny.code !== undefined && responseAny.code !== 0) {
+    throw new Error(`Feishu download failed: ${responseAny.msg || `code ${responseAny.code}`}`);
+  }
+
+  // Get readable stream and convert to buffer
+  const stream = responseAny.getReadableStream();
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.from(chunk));
+  }
+
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Download a voice/audio file from Feishu and save to local path
+ */
+export async function downloadFeishuVoice(params: {
+  cfg: ClawdbotConfig;
+  messageId: string;
+  fileKey: string;
+  outputPath?: string;
+}): Promise<string> {
+  const { cfg, messageId, fileKey, outputPath } = params;
+  const buffer = await downloadFeishuFile({ cfg, messageId, fileKey, fileType: "audio" });
+
+  const targetPath = outputPath ?? `/tmp/feishu_voice_${Date.now()}.wav`;
+
+  // Ensure output directory exists
+  const outputDir = path.dirname(targetPath);
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  fs.writeFileSync(targetPath, buffer);
+  return targetPath;
+}
+
+/**
+ * Transcribe a voice file using Whisper
+ * Returns the transcription text
+ */
+export async function transcribeVoice(params: {
+  voicePath: string;
+  language?: string;
+}): Promise<string> {
+  const { voicePath, language = "zh" } = params;
+
+  const modelPath = `${process.env.HOME}/.cache/whisper/ggml-large-v3.bin`;
+
+  if (!fs.existsSync(modelPath)) {
+    throw new Error(`Whisper model not found: ${modelPath}`);
+  }
+
+  // Run whisper-cli to transcribe
+  const command = `whisper-cli -m "${modelPath}" -f "${voicePath}" -l "${language}" -oj --no-timestamps`;
+  const result = execSync(command, { encoding: "utf-8" });
+
+  // Parse the JSON output
+  try {
+    const transcription = JSON.parse(result);
+    return transcription.map((seg: any) => seg.text).join(" ").trim();
+  } catch {
+    // If not JSON, return the raw result
+    return result.trim();
+  }
+}
+
+/**
+ * Download and transcribe a voice message from Feishu
+ */
+export async function downloadAndTranscribeVoice(params: {
+  cfg: ClawdbotConfig;
+  messageId: string;
+  fileKey: string;
+}): Promise<string> {
+  const { cfg, messageId, fileKey } = params;
+
+  // Download the voice file
+  const voicePath = await downloadFeishuVoice({
+    cfg,
+    messageId,
+    fileKey,
+  });
+
+  // Transcribe using Whisper
+  const transcription = await transcribeVoice({ voicePath });
+
+  return transcription;
 }
